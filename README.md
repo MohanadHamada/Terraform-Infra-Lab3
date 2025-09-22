@@ -1,1 +1,1 @@
-# Terraform-Ifrastructure-Lab3
+# Terrafrom-Infrastructure-Lab3
