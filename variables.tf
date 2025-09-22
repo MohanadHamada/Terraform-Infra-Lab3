@@ -28,3 +28,6 @@ variable "natgw_name" {
   type = string
   default = "nat-gw-infra"
 }
+variable "key_pair_user" {
+  default = "ec2-user"
+}

@@ -64,7 +64,89 @@ module "private_route_table_assoc" {
   route_table_id = module.private_route_table.route_table_id
   #region = substr(each.key, length(each.key) - 1, 1)
 }
-module "seq_grp" {
+module "sg_proxy" {
   source = "./sec_group"
   vpc_id = module.main_vpc.vpc_id
+  name   = "proxy-sg"
+  ingress = [
+    { from = 80, to = 80, protocol = "tcp", cidr_blocks = ["0.0.0.0/0"] } # allow http
+  ]
 }
+
+module "sg_backend" {
+  source = "./sec_group"
+  vpc_id = module.main_vpc.vpc_id
+  name   = "backend-sg"
+  ingress = [
+    { from = 80, to = 80, protocol = "tcp", cidr_blocks = [var.subnets["private-1.0-a"],var.subnets["private-3.0-b"]] } # only from private subnets (or ALB)
+  ]
+}
+data "aws_ami" "amazon_linux" {
+  most_recent = true
+  owners      = ["amazon"]
+
+  filter {
+    name   = "name"
+    values = ["amzn2-ami-hvm-*-x86_64-gp2"]
+  }
+}
+module "ec2_proxy" {
+  source = "./ec2"
+  ami_id = data.aws_ami.amazon_linux.id
+  #instance_type = "t3.micro"
+  subnet_ids = [for k, v in var.subnets : module.subnet[k].subnet_id if split("-", k)[0] == "public"]
+  sg_id = module.sg_proxy.sg_id
+  user_data = file("scripts/proxy_user_data.sh")
+  connection_user = "ec2-user"
+  connection_private_key = local_file.private_key.filename
+  remote_install = true
+}
+module "ec2_backend" {
+  source = "./ec2"
+  ami_id = data.aws_ami.amazon_linux.id
+  #instance_type = "t3.micro"
+  subnet_ids = [for k, v in var.subnets : module.subnet[k].subnet_id if split("-", k)[0] == "private"]
+  sg_id = module.sg_backend.sg_id
+  user_data = file("scripts/backend_user_data.sh")
+  connection_user = var.key_pair_user
+  connection_private_key = local_file.private_key.filename
+  remote_install = false
+}
+module "public_elb" {
+  source = "./elb"
+  name = "app-alb"
+  internal = false
+  subnets = [for k, v in var.subnets : module.subnet[k].subnet_id if split("-", k)[0] == "public"]
+  sg_id = module.sg_proxy.sg_id
+  vpc_id = module.main_vpc.vpc_id
+  target_instance_ids = module.ec2_backend.instance_ids
+}
+module "private_elb" {
+  source = "./elb"
+  name = "app-alb-internal"
+  internal = true
+  subnets = [for k, v in var.subnets : module.subnet[k].subnet_id if split("-", k)[0] == "private"]
+  sg_id = module.sg_backend.sg_id
+  vpc_id = module.main_vpc.vpc_id
+  target_instance_ids = module.ec2_backend.instance_ids
+  
+}
+# Save all IPs to all-ips.txt using local-exec
+resource "null_resource" "write_ips" {
+  triggers = {
+    proxy_ips   = join(",", module.ec2_proxy.public_ips)
+    backend_ips = join(",", module.ec2_backend.private_ips)
+  }
+
+  provisioner "local-exec" {
+    command = <<EOT
+cat > all-ips.txt <<EOF
+public-ip1 ${module.ec2_proxy.public_ips[0]}
+public-ip2 ${element(module.ec2_proxy.public_ips,1)}
+private-ip1 ${module.ec2_backend.private_ips[0]}
+private-ip2 ${element(module.ec2_backend.private_ips,1)}
+EOF
+EOT
+  }
+}
+
