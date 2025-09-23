@@ -46,11 +46,11 @@ terraform import aws_dynamodb_table.name terraform-infra-state-dynamodb-table
 */
 terraform {
   backend "s3" {
-    bucket = "terraform-infra-state-bucket-1561"
-    key = "dev/terraform.tfstate"
-    region = "us-east-1"
+    bucket         = "terraform-infra-state-bucket-1561"
+    key            = "dev/terraform.tfstate"
+    region         = "us-east-1"
     dynamodb_table = "terraform-infra-state-dynamodb-table"
-    encrypt = true
-    profile = "default"
+    encrypt        = true
+    profile        = "default"
   }
 }

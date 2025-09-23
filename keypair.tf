@@ -1,4 +1,4 @@
-resource "tls_private_key" "keypair" {
+/*resource "tls_private_key" "keypair" {
   algorithm = "RSA"
   rsa_bits  = 4096
 }
@@ -15,4 +15,4 @@ resource "local_file" "private_key" {
 resource "local_file" "public_key" {
   content  = tls_private_key.keypair.public_key_openssh
   filename = "${path.module}/.ssh/tera-key.pub"
-}
+}*/

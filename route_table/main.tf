@@ -4,5 +4,5 @@ resource "aws_route_table" "rout_table" {
     cidr_block = var.destination_ip
     gateway_id = var.gw_id
   }
-  tags = {Name = var.rt_name}
+  tags = { Name = var.rt_name }
 }
