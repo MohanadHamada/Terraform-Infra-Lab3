@@ -28,6 +28,5 @@ variable "natgw_name" {
   type = string
   default = "nat-gw-infra"
 }
-variable "key_pair_user" {
-  default = "ec2-user"
-}
+variable "connection_user" {default = "ec2-user"}
+variable "instance_type" { default = "t3.micro" }

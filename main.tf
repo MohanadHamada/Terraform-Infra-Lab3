@@ -64,12 +64,30 @@ module "private_route_table_assoc" {
   route_table_id = module.private_route_table.route_table_id
   #region = substr(each.key, length(each.key) - 1, 1)
 }
+data "http" "my_ip" {
+  url = "https://checkip.amazonaws.com/"
+}
+locals {
+  my_ip = "${chomp(data.http.my_ip.response_body)}/32"
+}
+
 module "sg_proxy" {
   source = "./sec_group"
   vpc_id = module.main_vpc.vpc_id
   name   = "proxy-sg"
   ingress = [
-    { from = 80, to = 80, protocol = "tcp", cidr_blocks = ["0.0.0.0/0"] } # allow http
+    { 
+      from        = 22
+      to          = 22
+      protocol    = "tcp"
+      cidr_blocks = [local.my_ip]  #from my IP only
+    },
+    { 
+      from        = 80
+      to          = 80
+      protocol    = "tcp"
+      cidr_blocks = ["0.0.0.0/0"] # from anywhere
+    }
   ]
 }
 
@@ -78,7 +96,12 @@ module "sg_backend" {
   vpc_id = module.main_vpc.vpc_id
   name   = "backend-sg"
   ingress = [
-    { from = 80, to = 80, protocol = "tcp", cidr_blocks = [var.subnets["private-1.0-a"],var.subnets["private-3.0-b"]] } # only from private subnets (or ALB)
+    { 
+      from        = 80
+      to          = 80
+      protocol    = "tcp"
+      security_groups = [module.sg_proxy.sg_id]  # from proxy
+    }
   ]
 }
 data "aws_ami" "amazon_linux" {
@@ -93,25 +116,30 @@ data "aws_ami" "amazon_linux" {
 module "ec2_proxy" {
   source = "./ec2"
   ami_id = data.aws_ami.amazon_linux.id
-  #instance_type = "t3.micro"
+  instance_type = var.instance_type
+  public_ip_address = true
   subnet_ids = [for k, v in var.subnets : module.subnet[k].subnet_id if split("-", k)[0] == "public"]
   sg_id = module.sg_proxy.sg_id
-  user_data = file("scripts/proxy_user_data.sh")
-  connection_user = "ec2-user"
-  connection_private_key = local_file.private_key.filename
-  remote_install = true
+  key_pem = aws_key_pair.generated.key_name
+  #user_data = file("scripts/proxy_user_data.sh")
+  connection_user = var.connection_user
+  instance_name = "public"
+  private_key_pem = aws_key_pair.generated.key_name
 }
 module "ec2_backend" {
   source = "./ec2"
   ami_id = data.aws_ami.amazon_linux.id
-  #instance_type = "t3.micro"
   subnet_ids = [for k, v in var.subnets : module.subnet[k].subnet_id if split("-", k)[0] == "private"]
   sg_id = module.sg_backend.sg_id
-  user_data = file("scripts/backend_user_data.sh")
-  connection_user = var.key_pair_user
-  connection_private_key = local_file.private_key.filename
-  remote_install = false
+  instance_type = var.instance_type
+  public_ip_address = false
+  instance_name = "private"
+  #user_data = file("scripts/backend_user_data.sh")
+  key_pem = aws_key_pair.generated.key_name
+  connection_user = var.connection_user
+  private_key_pem = aws_key_pair.generated.key_name
 }
+
 module "public_elb" {
   source = "./elb"
   name = "app-alb"
@@ -119,7 +147,7 @@ module "public_elb" {
   subnets = [for k, v in var.subnets : module.subnet[k].subnet_id if split("-", k)[0] == "public"]
   sg_id = module.sg_proxy.sg_id
   vpc_id = module.main_vpc.vpc_id
-  target_instance_ids = module.ec2_backend.instance_ids
+  target_instance_ids = module.ec2_proxy.instance_ids
 }
 module "private_elb" {
   source = "./elb"

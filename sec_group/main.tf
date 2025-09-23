@@ -8,7 +8,8 @@ resource "aws_security_group" "sec_group" {
       from_port   = ingress.value.from
       to_port     = ingress.value.to
       protocol    = ingress.value.protocol
-      cidr_blocks = ingress.value.cidr_blocks
+      cidr_blocks = lookup(ingress.value, "cidr_blocks", null)
+      security_groups = lookup(ingress.value, "security_groups", null)
     }
   }
 

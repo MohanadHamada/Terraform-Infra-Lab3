@@ -4,11 +4,12 @@ variable "vpc_id" {
   type        = string
 }
 variable "ingress" {
-  type    = list(object({
-    from        = number
-    to          = number
-    protocol    = string
-    cidr_blocks = list(string)
+  type = list(object({
+    from            = number
+    to              = number
+    protocol        = string
+    cidr_blocks     = optional(list(string))
+    security_groups = optional(list(string))
   }))
   default = []
 }
