@@ -1,4 +1,4 @@
-/*
+
 resource "aws_s3_bucket" "terraform_state" {
   bucket = "terraform-infra-state-bucket-1561"
   lifecycle {
@@ -26,7 +26,7 @@ resource "aws_dynamodb_table" "name" {
     prevent_destroy = true
   }
 }
-*/
+
 /*
 - After applying this configuration, if you want to remove the resources from the state file without deleting them from AWS (lifecycle{prevent_destroy = true} whole destroy proccess stop ,not skip to other and keep remote backend)
 , you can use the following commands:
