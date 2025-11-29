@@ -4,7 +4,7 @@ A comprehensive AWS infrastructure deployment using Terraform that creates a sca
 
 ## Architecture Diagram
 
-![Multi-Tier Proxy Architecture](images/Untitled.png)
+![Multi-Tier Proxy Architecture](Arch.png)
 *Complete architecture diagram showing the multi-tier proxy infrastructure with VPC, subnets, load balancers, EC2 instances, and traffic flow*
 
 ## Architecture Overview
