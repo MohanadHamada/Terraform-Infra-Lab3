@@ -1,268 +1,113 @@
-provider "aws" {
-  shared_config_files      = ["~/.aws/credentials"]
-  shared_credentials_files = ["~/.aws/config"]
-  profile                  = "default"
-}
-module "main_vpc" {
-  source   = "./vpc"
-  vpc_cidr = var.vpc_cidr
-  vpc_name = var.vpc_name
+# Main Terraform Configuration for Multi-Tier Proxy Infrastructure
 
-}
-module "subnet" {
-  source            = "./subnet"
-  for_each          = var.subnets
-  subnet_name       = each.key
-  vpc_id            = module.main_vpc.vpc_id
-  subnet_cidr       = each.value
-  availability_zone = "us-east-1${regex("[a-z]$", each.key)}"
-  map_public_ip     = split("-", each.key)[0] == "public" ? true : false
-}
-module "igw" {
-  source   = "./igw"
-  vpc_id   = module.main_vpc.vpc_id
-  igw_name = var.igw_name
-}
-module "nat_gw" {
-  source    = "./nat_eip"
-  subnet_id = module.subnet["public-0.0-a"].subnet_id
-  name_nat  = var.natgw_name
-}
-module "public_route_table" {
-  source = "./route_table"
-  #for_each = toset(var.rt_name) # var.rt_name = ["public", "private"]
-  vpc_id         = module.main_vpc.vpc_id
-  destination_ip = var.destination_ip
-  #gw_id = each.key == "public" ? module.igw.igw_id : module.nat_gw.nat_gw_id
-  gw_id   = module.igw.igw_id
-  rt_name = "public"
-}
-module "public_route_table_assoc" {
-  source         = "./route_table_association"
-  for_each       = { for k, v in var.subnets : k => v if split("-", k)[0] == "public" }
-  subnet_id      = module.subnet[each.key].subnet_id
-  route_table_id = module.public_route_table.route_table_id
-  #region = substr(each.key, length(each.key) - 1, 1)
-}
-resource "aws_main_route_table_association" "main_to_public" {
-  vpc_id         = module.main_vpc.vpc_id
-  route_table_id = module.public_route_table.route_table_id
-}
-module "private_route_table" {
-  source = "./route_table"
-  #for_each = toset(var.rt_name) # var.rt_name = ["public", "private"]
-  vpc_id         = module.main_vpc.vpc_id
-  destination_ip = var.destination_ip
-  #gw_id = each.key == "public" ? module.igw.igw_id : module.nat_gw.nat_gw_id
-  gw_id   = module.nat_gw.nat_gw_id
-  rt_name = "private"
-}
-module "private_route_table_assoc" {
-  source         = "./route_table_association"
-  for_each       = { for k, v in var.subnets : k => v if split("-", k)[0] == "private" }
-  subnet_id      = module.subnet[each.key].subnet_id
-  route_table_id = module.private_route_table.route_table_id
-  #region = substr(each.key, length(each.key) - 1, 1)
-}
-/*data "http" "my_ip" {
-  url = "https://checkip.amazonaws.com/"
-}
-locals {
-  my_ip = "${chomp(data.http.my_ip.response_body)}/32"
-}*/
+# Remote Backend Module - Creates S3 bucket and DynamoDB table for state management
+module "remote_backend" {
+  source = "./modules/remote_backend"
 
-module "sg_proxy" {
-  source = "./sec_group"
-  vpc_id = module.main_vpc.vpc_id
-  name   = "proxy-sg"
-  ingress = [
-    {
-      from        = 22
-      to          = 22
-      protocol    = "tcp"
-      cidr_blocks = ["0.0.0.0/0"]
-    },
-    {
-      from        = 80
-      to          = 80
-      protocol    = "tcp"
-      cidr_blocks = ["0.0.0.0/0"]
-    }
-  ]
+  bucket_name          = var.state_bucket_name
+  dynamodb_table_name  = var.state_dynamodb_table_name
+  region              = var.aws_region
 }
 
-module "sg_backend" {
-  source = "./sec_group"
-  vpc_id = module.main_vpc.vpc_id
-  name   = "backend-sg"
-  ingress = [
-    {
-      from            = 80
-      to              = 80
-      protocol        = "tcp"
-      security_groups = [module.sg_proxy.sg_id]
-    },
-    {
-      from            = 22
-      to              = 22
-      protocol        = "tcp"
-      security_groups = [module.sg_proxy.sg_id]
-    }
-  ]
-}
-module "sg-private-load_balancer" {
-  source = "./sec_group"
-  vpc_id = module.main_vpc.vpc_id
-  name   = "lb-private-sg"
-  ingress = [
-    {
-      from            = 80
-      to              = 80
-      protocol        = "tcp"
-      security_groups = [module.sg_proxy.sg_id]
-    },
-    {
-      from        = 80
-      to          = 80
-      protocol    = "tcp"
-      cidr_blocks = [module.main_vpc.vpc_cidr]
-    }
-  ]
-}
-data "aws_ami" "amazon_linux" {
-  most_recent = true
-  owners      = ["amazon"]
+# VPC Module - Creates VPC, subnets, and internet gateway
+module "vpc" {
+  source = "./modules/vpc"
 
-  filter {
-    name   = "name"
-    values = ["amzn2-ami-hvm-*-x86_64-gp2"]
-  }
-}
-module "ec2_proxy" {
-  source            = "./ec2"
-  ami_id            = data.aws_ami.amazon_linux.id
-  instance_type     = var.instance_type
-  public_ip_address = true
-  subnet_ids        = [for k, v in var.subnets : module.subnet[k].subnet_id if split("-", k)[0] == "public"]
-  sg_id             = module.sg_proxy.sg_id
-  key_pem           = "terra-infra-key"
-  user_data         = file("scripts/user_data_script.sh")
-  connection_user   = var.connection_user
-  instance_name     = "public"
-}
-module "ec2_backend" {
-  source            = "./ec2"
-  ami_id            = data.aws_ami.amazon_linux.id
-  subnet_ids        = [for k, v in var.subnets : module.subnet[k].subnet_id if split("-", k)[0] == "private"]
-  sg_id             = module.sg_backend.sg_id
-  instance_type     = var.instance_type
-  public_ip_address = false
-  instance_name     = "private"
-  user_data         = file("scripts/user_data_script.sh")
-  key_pem           = "terra-infra-key"
-  connection_user   = var.connection_user
+  vpc_cidr             = var.vpc_cidr
+  public_subnet_cidrs  = var.public_subnet_cidrs
+  private_subnet_cidrs = var.private_subnet_cidrs
+  availability_zones   = var.availability_zones
+  project_name         = var.project_name
 }
 
-module "public_elb" {
-  source              = "./elb"
-  name                = "app-alb"
+# NAT Gateway Module - Creates NAT gateway for private subnet internet access
+module "nat_gateway" {
+  source = "./modules/nat_gateway"
+
+  public_subnet_id        = module.vpc.public_subnet_id
+  private_route_table_id  = module.vpc.private_route_table_id
+  internet_gateway_id     = module.vpc.internet_gateway_id
+  project_name           = var.project_name
+
+  depends_on = [module.vpc]
+}
+
+# Security Groups Module - Creates security groups for all tiers
+module "security_groups" {
+  source = "./modules/security_groups"
+
+  vpc_id          = module.vpc.vpc_id
+  project_name    = var.project_name
+  management_cidr = var.management_cidr
+
+  depends_on = [module.vpc]
+}
+
+# Proxy EC2 Instances - Public subnet nginx proxy instances
+module "proxy_instances" {
+  source = "./modules/ec2"
+
+  instance_count      = 2
+  instance_type       = var.instance_type
+  subnet_id           = module.vpc.public_subnet_id
+  security_group_ids  = [module.security_groups.proxy_sg_id]
+  associate_public_ip = true
+  # key_name removed - using AWS Console/Session Manager for access
+  name_prefix        = "${var.project_name}-proxy"
+  instance_type_tag  = "proxy"
+  ip_prefix          = "public-ip"
+
+  # Use user data script with private ALB DNS placeholder
+  user_data_script = replace(var.proxy_user_data_script, "PRIVATE_ALB_DNS_PLACEHOLDER", module.private_alb.alb_dns_name)
+
+  depends_on = [module.vpc, module.security_groups, module.private_alb]
+}
+
+# Backend EC2 Instances - Private subnet web server instances
+module "backend_instances" {
+  source = "./modules/ec2"
+
+  instance_count      = 2
+  instance_type       = var.instance_type
+  subnet_id           = module.vpc.private_subnet_id
+  security_group_ids  = [module.security_groups.backend_sg_id]
+  associate_public_ip = false
+  
+  name_prefix        = "${var.project_name}-backend"
+  instance_type_tag  = "backend"
+  ip_prefix          = "private-ip"
+
+  user_data_script = var.backend_user_data_script
+
+  depends_on = [module.vpc, module.security_groups, module.nat_gateway]
+}
+
+# Public Application Load Balancer - Internet-facing ALB for proxy instances
+module "public_alb" {
+  source = "./modules/load_balancer"
+
+  name                = "multi-tier-public-alb"
   internal            = false
-  subnets             = [for k, v in var.subnets : module.subnet[k].subnet_id if split("-", k)[0] == "public"]
-  sg_id               = module.sg_proxy.sg_id
-  vpc_id              = module.main_vpc.vpc_id
-  target_instance_ids = module.ec2_proxy.instance_ids
+  subnet_ids          = module.vpc.public_subnet_ids
+  security_group_ids  = [module.security_groups.public_alb_sg_id]
+  target_instance_ids = module.proxy_instances.instance_ids
+  target_port         = 80
+  vpc_id              = module.vpc.vpc_id
+
+  depends_on = [module.vpc, module.security_groups, module.proxy_instances]
 }
-module "private_elb" {
-  source              = "./elb"
-  name                = "app-alb-internal"
+
+# Private Application Load Balancer - Internal ALB for backend instances
+module "private_alb" {
+  source = "./modules/load_balancer"
+
+  name                = "multi-tier-private-alb"
   internal            = true
-  subnets             = [for k, v in var.subnets : module.subnet[k].subnet_id if split("-", k)[0] == "private"]
-  sg_id               = module.sg_backend.sg_id
-  vpc_id              = module.main_vpc.vpc_id
-  target_instance_ids = module.ec2_backend.instance_ids
+  subnet_ids          = module.vpc.private_subnet_ids
+  security_group_ids  = [module.security_groups.private_alb_sg_id]
+  target_instance_ids = module.backend_instances.instance_ids
+  target_port         = 80
+  vpc_id              = module.vpc.vpc_id
 
+  depends_on = [module.vpc, module.security_groups, module.backend_instances]
 }
-
-resource "null_resource" "configuration" {
-  count      = length(module.ec2_proxy.instance_ids)
-  depends_on = [module.ec2_proxy, module.public_elb]
-
-  triggers = {
-    lb_dns      = module.public_elb.dns_name
-    instance_id = module.ec2_proxy.public_ips[count.index]
-    force_run   = timestamp() # Force re-run on every apply
-  }
-
-
-
-  provisioner "remote-exec" {
-    connection {
-      type        = "ssh"
-      user        = "ec2-user"
-      private_key = file(var.key_pem)
-      host        = module.ec2_proxy.public_ips[count.index]
-    }
-
-    inline = [
-      "echo 'Configuring redirect to ${module.public_elb.dns_name} on instance ${count.index + 1}'",
-      "sudo yum update -y",
-      "sudo amazon-linux-extras install nginx1 -y",
-      "sudo rm -f /etc/nginx/nginx.conf",
-      "sudo tee /etc/nginx/nginx.conf > /dev/null <<EOF",
-      "events {",
-      "    worker_connections 1024;",
-      "}",
-      "http {",
-      "    upstream private_lb {",
-      "        server ${module.private_elb.dns_name}:80;",
-      "    }",
-      "    server {",
-      "        listen 80;",
-      "        server_name _;",
-      "        location / {",
-      "            proxy_pass http://private_lb;",
-      "            proxy_set_header Host \\$host;",
-      "            proxy_set_header X-Real-IP \\$remote_addr;",
-      "            proxy_set_header X-Forwarded-For \\$proxy_add_x_forwarded_for;",
-      "            proxy_set_header X-Forwarded-Proto \\$scheme;",
-      "            proxy_connect_timeout 30s;",
-      "            proxy_send_timeout 30s;",
-      "            proxy_read_timeout 30s;",
-      "        }",
-      "        location /health {",
-      "            return 200 'OK from Public Instance ${count.index + 1}';",
-      "            add_header Content-Type text/plain;",
-      "        }",
-      "    }",
-      "}",
-      "EOF",
-      "sudo nginx -t",
-      "sudo systemctl enable nginx",
-      "sudo systemctl start nginx",
-      "sudo systemctl status nginx",
-      "echo 'Nginx reverse proxy configured successfully on instance ${count.index + 1}'"
-    ]
-  }
-}
-# Save all IPs to all-ips.txt using local-exec
-resource "null_resource" "write_ips" {
-  triggers = {
-    proxy_ips   = join(",", module.ec2_proxy.public_ips)
-    backend_ips = join(",", module.ec2_backend.private_ips)
-  }
-
-  provisioner "local-exec" {
-    command = <<EOT
-cat > all-ips.txt <<EOF
-public-ip1 ${module.ec2_proxy.public_ips[0]}
-public-ip2 ${element(module.ec2_proxy.public_ips, 1)}
-private-ip1 ${module.ec2_backend.private_ips[0]}
-private-ip2 ${element(module.ec2_backend.private_ips, 1)}
-EOF
-EOT
-  }
-  /*provisioner "local-exec" {
-    command = "echo ${var.instance_name}-ip${count.index + 1} ${self.public_ip != "" ? self.public_ip : self.private_ip} >> all-ips2.txt"
-  }*/
-}
-
